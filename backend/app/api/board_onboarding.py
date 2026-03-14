@@ -233,7 +233,7 @@ async def start_onboarding(
     prompt = (
         "BOARD ONBOARDING REQUEST\n\n"
         f"Board Name: {board.name}\n"
-        f"Board Description: {board.description or '(not provided)'}\n"
+        f"Board Description: {board.description or '(not provided)'}\n\n"
         "You are the gateway agent. Ask the user 6-10 focused questions total:\n"
         "- 3-6 questions to clarify the board goal.\n"
         "- 1 question to choose a unique name for the board lead agent "
@@ -252,48 +252,38 @@ async def start_onboarding(
         '(e.g., "Other (I\'ll type it)").\n'
         '- If the user sends an "Additional context" message later, incorporate '
         "it and resend status=complete\n"
-        "  to update the draft (until the user confirms).\n"
-        "Do NOT respond in OpenClaw chat.\n"
-        "All onboarding responses MUST be sent to Mission Control via API.\n"
-        f"Mission Control base URL: {base_url}\n"
-        "Use the AUTH_TOKEN from USER.md or TOOLS.md and pass it as X-Agent-Token.\n"
-        "Onboarding response endpoint:\n"
-        f"POST {base_url}/api/v1/agent/boards/{board.id}/onboarding\n"
-        "QUESTION example (send JSON body exactly as shown):\n"
-        f'curl -s -X POST "{base_url}/api/v1/agent/boards/{board.id}/onboarding" '
-        '-H "X-Agent-Token: $AUTH_TOKEN" '
-        '-H "Content-Type: application/json" '
-        '-d \'{"question":"...","options":[{"id":"1","label":"..."},'
-        '{"id":"2","label":"..."}]}\'\n'
-        "COMPLETION example (send JSON body exactly as shown):\n"
-        f'curl -s -X POST "{base_url}/api/v1/agent/boards/{board.id}/onboarding" '
-        '-H "X-Agent-Token: $AUTH_TOKEN" '
-        '-H "Content-Type: application/json" '
-        '-d \'{"status":"complete","board_type":"goal","objective":"...",'
+        "  to update the draft (until the user confirms).\n\n"
+        "RESPONSE PROTOCOL (follow exactly):\n"
+        "- Do NOT respond in OpenClaw chat.\n"
+        "- All onboarding responses MUST be sent to Mission Control via the API.\n"
+        "- Use the agent_board_onboarding_update operation "
+        f"(POST {base_url}/api/v1/agent/boards/{board.id}/onboarding).\n"
+        "- Authenticate with the AUTH_TOKEN from TOOLS.md "
+        "via the X-Agent-Token header.\n\n"
+        "QUESTION payload (one per request, raw JSON body, no markdown):\n"
+        '{"question":"...","options":[{"id":"1","label":"..."},'
+        '{"id":"2","label":"..."}]}\n\n'
+        "COMPLETION payload (when you have enough info, one final request):\n"
+        '{"status":"complete","board_type":"goal|general","objective":"...",'
         '"success_metrics":{"metric":"...","target":"..."},'
         '"target_date":"YYYY-MM-DD",'
         '"user_profile":{"preferred_name":"...","pronouns":"...",'
         '"timezone":"...","notes":"...","context":"..."},'
-        '"lead_agent":{"name":"Ava","identity_profile":{"role":"Board Lead",'
-        '"communication_style":"direct, concise, practical","emoji":":gear:"},'
-        '"autonomy_level":"balanced","verbosity":"concise",'
-        '"output_format":"bullets","update_cadence":"daily",'
-        '"custom_instructions":"..."}}\'\n'
+        '"lead_agent":{"name":"...","identity_profile":{"role":"Board Lead",'
+        '"communication_style":"...","emoji":"..."},'
+        '"autonomy_level":"...","verbosity":"...","output_format":"...",'
+        '"update_cadence":"...","custom_instructions":"..."}}\n\n'
         "ENUMS:\n"
         "- board_type: goal | general\n"
         "- lead_agent.autonomy_level: ask_first | balanced | autonomous\n"
         "- lead_agent.verbosity: concise | balanced | detailed\n"
         "- lead_agent.output_format: bullets | mixed | narrative\n"
-        "- lead_agent.update_cadence: asap | hourly | daily | weekly\n"
-        "QUESTION FORMAT (one question per response, no arrays, no markdown, "
-        "no extra text):\n"
-        '{"question":"...","options":[{"id":"1","label":"..."},{"id":"2","label":"..."}]}\n'
-        "Do NOT wrap questions in a list. Do NOT add commentary.\n"
-        "When you have enough info, send one final response with status=complete.\n"
-        "The completion payload must include board_type. If board_type=goal, "
+        "- lead_agent.update_cadence: asap | hourly | daily | weekly\n\n"
+        "RULES:\n"
+        "- Send one question per request. Do NOT wrap in a list or add commentary.\n"
+        "- The completion payload must include board_type. If board_type=goal, "
         "include objective + success_metrics.\n"
-        "Also include user_profile + lead_agent to configure the board lead's "
-        "working style.\n"
+        "- Include user_profile + lead_agent to configure the board lead.\n"
     )
 
     session_key = await dispatcher.dispatch_start_prompt(
