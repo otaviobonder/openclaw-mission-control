@@ -72,6 +72,29 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         )
         return session_key
 
+    @staticmethod
+    def _frame_answer(board: Board, answer_text: str) -> str:
+        """Wrap a bare user answer with onboarding context.
+
+        Every other coordination message in the codebase includes a header,
+        board context, and protocol reminder.  Without framing, the LLM
+        progressively loses the onboarding protocol across Q&A rounds because
+        the original prompt drifts out of its attention window.
+        """
+        return (
+            "BOARD ONBOARDING — User answer\n"
+            f"Board: {board.name}\n"
+            f"Board ID: {board.id}\n\n"
+            f"{answer_text}\n\n"
+            "Continue the onboarding: send the next question "
+            "(or status=complete when ready) via the Mission Control API.\n"
+            "Use the agent_board_onboarding_update operation "
+            f"(POST /api/v1/agent/boards/{board.id}/onboarding).\n"
+            "Authenticate with the AUTH_TOKEN from TOOLS.md via the "
+            "X-Agent-Token header.\n"
+            "Do NOT respond in OpenClaw chat."
+        )
+
     async def dispatch_answer(
         self,
         *,
@@ -93,12 +116,13 @@ class BoardOnboardingMessagingService(AbstractGatewayMessagingService):
         _gateway, config = await GatewayDispatchService(
             self.session
         ).require_gateway_config_for_board(board)
+        framed = self._frame_answer(board, answer_text)
         try:
             await self._dispatch_gateway_message(
                 session_key=onboarding.session_key,
                 config=config,
                 agent_name="Gateway Agent",
-                message=answer_text,
+                message=framed,
                 deliver=False,
             )
         except (OpenClawGatewayError, TimeoutError) as exc:
