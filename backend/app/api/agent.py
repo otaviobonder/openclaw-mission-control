@@ -1226,21 +1226,30 @@ async def create_approval(
 @router.post(
     "/boards/{board_id}/onboarding",
     response_model=BoardOnboardingRead,
-    tags=AGENT_BOARD_TAGS,
+    tags=AGENT_MAIN_TAGS,
     openapi_extra=_agent_board_openapi_hints(
         intent="agent_board_onboarding_update",
         when_to_use=[
-            "Initialize or refresh agent onboarding state for board workflows.",
+            "Send an onboarding question or completion draft for a board.",
+            "Called by the gateway agent during the board onboarding Q&A flow.",
         ],
         routing_examples=[
             {
                 "input": {
-                    "intent": "record onboarding signal during workflow handoff",
-                    "required_privilege": "any_agent",
+                    "intent": "send onboarding question to mission control",
+                    "required_privilege": "gateway_main",
                 },
                 "decision": "agent_board_onboarding_update",
-            }
+            },
+            {
+                "input": {
+                    "intent": "submit completed onboarding draft for a board",
+                    "required_privilege": "gateway_main",
+                },
+                "decision": "agent_board_onboarding_update",
+            },
         ],
+        required_actor="gateway_main",
     ),
 )
 async def update_onboarding(
@@ -1249,9 +1258,9 @@ async def update_onboarding(
     session: AsyncSession = SESSION_DEP,
     agent_ctx: AgentAuthContext = AGENT_CTX_DEP,
 ) -> BoardOnboardingSession:
-    """Apply board onboarding updates from an agent workflow.
+    """Submit onboarding questions or a completion draft from the gateway agent.
 
-    Used during structured objective/success-metric intake loops.
+    Only callable by the gateway (main) agent during board onboarding.
     """
     _guard_board_access(agent_ctx, board)
     return await onboarding_api.agent_onboarding_update(
