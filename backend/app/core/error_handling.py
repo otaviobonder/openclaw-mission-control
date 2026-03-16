@@ -249,19 +249,8 @@ async def _request_validation_handler(
     request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
+    # `RequestValidationError` is expected user input; don't log at ERROR.
     request_id = _get_request_id(request)
-    # TODO(debug): temporary – remove after onboarding 422 is diagnosed
-    if "/onboarding" in request.url.path:
-        try:
-            body = (await request.body()).decode("utf-8", errors="replace")
-        except Exception:
-            body = "<unreadable>"
-        logger.warning(
-            "onboarding.validation_error path=%s body=%s errors=%s",
-            request.url.path,
-            body[:2000],
-            exc.errors(),
-        )
     return JSONResponse(
         status_code=422,
         content=_error_payload(detail=exc.errors(), request_id=request_id),
