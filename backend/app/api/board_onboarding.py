@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.time import utcnow
 from app.db.session import get_session
+from app.models.agents import Agent
 from app.models.board_onboarding import BoardOnboardingSession
 from app.schemas.board_onboarding import (
     BoardOnboardingAgentComplete,
@@ -32,8 +33,10 @@ from app.schemas.board_onboarding import (
     BoardOnboardingUserProfile,
 )
 from app.schemas.boards import BoardRead
+from app.services.openclaw.db_agent_state import mint_agent_token
 from app.services.openclaw.gateway_dispatch import GatewayDispatchService
 from app.services.openclaw.gateway_resolver import get_gateway_for_board
+from app.services.openclaw.lifecycle_orchestrator import AgentLifecycleOrchestrator
 from app.services.openclaw.onboarding_service import BoardOnboardingMessagingService
 from app.services.openclaw.policies import OpenClawAuthorizationPolicy
 from app.services.openclaw.provisioning_db import (
@@ -230,6 +233,52 @@ async def start_onboarding(
 
     dispatcher = BoardOnboardingMessagingService(session)
     base_url = settings.base_url
+
+    # Ensure the main gateway agent's workspace files (TOOLS.md, AGENTS.md,
+    # etc.) are current before the onboarding prompt references them.
+    # After an OpenClaw pod restart workspace files are lost; without this
+    # step the agent has no AUTH_TOKEN and cannot call back to Mission Control.
+    gateway = (
+        await GatewayDispatchService(session).require_gateway_config_for_board(board)
+    )[0]
+    main_agent = (
+        await Agent.objects.all()
+        .filter(col(Agent.gateway_id) == gateway.id)
+        .filter(col(Agent.board_id).is_(None))
+        .first(session)
+    )
+    auth_token: str | None = None
+    if main_agent is not None:
+        auth_token = mint_agent_token(main_agent)
+        session.add(main_agent)
+        await session.flush()
+        try:
+            await AgentLifecycleOrchestrator(session).run_lifecycle(
+                gateway=gateway,
+                agent_id=main_agent.id,
+                board=None,
+                user=None,
+                action="update",
+                auth_token=auth_token,
+                wake=False,
+                deliver_wakeup=False,
+                raise_gateway_errors=False,
+            )
+        except Exception:
+            logger.warning(
+                "onboarding.preflight_provision.failed board_id=%s",
+                board.id,
+                exc_info=True,
+            )
+
+    auth_line = (
+        f"- AUTH_TOKEN: {auth_token}\n"
+        "- Pass this token via the X-Agent-Token header.\n"
+        if auth_token
+        else "- Authenticate with the AUTH_TOKEN from TOOLS.md "
+        "via the X-Agent-Token header.\n"
+    )
+
     prompt = (
         "BOARD ONBOARDING REQUEST\n\n"
         f"Board Name: {board.name}\n"
@@ -258,8 +307,8 @@ async def start_onboarding(
         "- All onboarding responses MUST be sent to Mission Control via the API.\n"
         "- Use the agent_board_onboarding_update operation "
         f"(POST {base_url}/api/v1/agent/boards/{board.id}/onboarding).\n"
-        "- Authenticate with the AUTH_TOKEN from TOOLS.md "
-        "via the X-Agent-Token header.\n\n"
+        + auth_line
+        + "\n"
         "QUESTION payload (one per request, raw JSON body, no markdown):\n"
         '{"question":"...","options":[{"id":"1","label":"..."},'
         '{"id":"2","label":"..."}]}\n\n'
