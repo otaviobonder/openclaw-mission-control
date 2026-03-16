@@ -10,6 +10,9 @@ from app.services.openclaw.constants import (
     _COORDINATION_GATEWAY_BASE_DELAY_S,
     _COORDINATION_GATEWAY_MAX_DELAY_S,
     _COORDINATION_GATEWAY_TIMEOUT_S,
+    _LIFECYCLE_GATEWAY_BASE_DELAY_S,
+    _LIFECYCLE_GATEWAY_MAX_DELAY_S,
+    _LIFECYCLE_GATEWAY_TIMEOUT_S,
     _NON_TRANSIENT_GATEWAY_ERROR_MARKERS,
     _SECURE_RANDOM,
     _TRANSIENT_GATEWAY_ERROR_MARKERS,
@@ -122,3 +125,25 @@ async def with_coordination_gateway_retry(fn: Callable[[], Awaitable[_T]]) -> _T
         timeout_context="gateway coordination",
     )
     return await backoff.run(fn)
+
+
+async def with_lifecycle_gateway_retry(fn: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a gateway lifecycle call with retry for transient restart errors.
+
+    The gateway may restart (SIGUSR1) after config.patch or agents.create,
+    causing transient HTTP 503 / connection-refused errors for subsequent RPC
+    calls. This wrapper retries with exponential backoff until the gateway is
+    back, converting a final timeout into ``OpenClawGatewayError`` so callers
+    see a consistent exception type.
+    """
+    backoff = GatewayBackoff(
+        timeout_s=_LIFECYCLE_GATEWAY_TIMEOUT_S,
+        base_delay_s=_LIFECYCLE_GATEWAY_BASE_DELAY_S,
+        max_delay_s=_LIFECYCLE_GATEWAY_MAX_DELAY_S,
+        jitter=0.15,
+        timeout_context="agent lifecycle provisioning",
+    )
+    try:
+        return await backoff.run(fn)
+    except TimeoutError as exc:
+        raise OpenClawGatewayError(str(exc)) from exc

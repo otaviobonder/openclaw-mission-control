@@ -24,6 +24,7 @@ from app.services.openclaw.db_agent_state import (
 )
 from app.services.openclaw.db_service import OpenClawDBService
 from app.services.openclaw.gateway_rpc import OpenClawGatewayError
+from app.services.openclaw.internal.retry import with_lifecycle_gateway_retry
 from app.services.openclaw.lifecycle_queue import (
     QueuedAgentLifecycleReconcile,
     enqueue_lifecycle_reconcile,
@@ -106,19 +107,23 @@ class AgentLifecycleOrchestrator(OpenClawDBService):
             return locked
 
         try:
-            await OpenClawGatewayProvisioner().apply_agent_lifecycle(
-                agent=locked,
-                gateway=gateway,
-                board=board,
-                auth_token=raw_token,
-                user=template_user,
-                action=action,
-                force_bootstrap=force_bootstrap,
-                reset_session=reset_session,
-                wake=wake,
-                deliver_wakeup=deliver_wakeup,
-                wakeup_verb=wakeup_verb,
-            )
+
+            async def _do_provision() -> None:
+                await OpenClawGatewayProvisioner().apply_agent_lifecycle(
+                    agent=locked,
+                    gateway=gateway,
+                    board=board,
+                    auth_token=raw_token,
+                    user=template_user,
+                    action=action,
+                    force_bootstrap=force_bootstrap,
+                    reset_session=reset_session,
+                    wake=wake,
+                    deliver_wakeup=deliver_wakeup,
+                    wakeup_verb=wakeup_verb,
+                )
+
+            await with_lifecycle_gateway_retry(_do_provision)
         except OpenClawGatewayError as exc:
             locked.last_provision_error = str(exc)
             locked.updated_at = utcnow()
