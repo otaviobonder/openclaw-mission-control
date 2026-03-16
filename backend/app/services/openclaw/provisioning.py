@@ -46,6 +46,7 @@ from app.services.openclaw.gateway_rpc import (
     send_message,
 )
 from app.services.openclaw.internal.agent_key import agent_key as _agent_key
+from app.services.openclaw.internal.retry import with_lifecycle_gateway_retry
 from app.services.openclaw.internal.agent_key import slugify
 from app.services.openclaw.internal.session_keys import (
     board_agent_session_key,
@@ -932,29 +933,35 @@ class BaseAgentLifecycleManager(ABC):
         # Always attempt to sync Mission Control's full template set.
         # Do not introspect gateway defaults (avoids touching gateway "main" agent state).
         file_names = self._file_names(agent)
-        existing_files = await self._control_plane.list_agent_files(agent_id)
-        include_bootstrap = _should_include_bootstrap(
-            action=options.action,
-            force_bootstrap=options.force_bootstrap,
-            existing_files=existing_files,
-        )
-        rendered = _render_agent_files(
-            context,
-            agent,
-            file_names,
-            include_bootstrap=include_bootstrap,
-            template_overrides=self._template_overrides(agent),
-        )
 
-        await self._set_agent_files(
-            agent=agent,
-            agent_id=agent_id,
-            rendered=rendered,
-            desired_file_names=set(rendered.keys()),
-            existing_files=existing_files,
-            action=options.action,
-            overwrite=options.overwrite,
-        )
+        # upsert_agent above may trigger a gateway restart (via config.patch).
+        # Wrap the subsequent RPC calls with retry so they wait for the gateway
+        # to come back instead of failing immediately with HTTP 503.
+        async def _sync_files() -> None:
+            existing_files = await self._control_plane.list_agent_files(agent_id)
+            include_bootstrap = _should_include_bootstrap(
+                action=options.action,
+                force_bootstrap=options.force_bootstrap,
+                existing_files=existing_files,
+            )
+            rendered = _render_agent_files(
+                context,
+                agent,
+                file_names,
+                include_bootstrap=include_bootstrap,
+                template_overrides=self._template_overrides(agent),
+            )
+            await self._set_agent_files(
+                agent=agent,
+                agent_id=agent_id,
+                rendered=rendered,
+                desired_file_names=set(rendered.keys()),
+                existing_files=existing_files,
+                action=options.action,
+                overwrite=options.overwrite,
+            )
+
+        await with_lifecycle_gateway_retry(_sync_files)
 
 
 class BoardAgentLifecycleManager(BaseAgentLifecycleManager):
@@ -1185,30 +1192,34 @@ class OpenClawGatewayProvisioner:
             session_label=agent.name or "Gateway Agent",
         )
 
-        if reset_session:
-            try:
-                await control_plane.reset_agent_session(session_key)
-            except OpenClawGatewayError as exc:
-                if not _is_missing_session_error(exc):
-                    raise
+        # Post-provision steps may also hit the restart window; wrap with retry.
+        async def _post_provision() -> None:
+            if reset_session:
+                try:
+                    await control_plane.reset_agent_session(session_key)
+                except OpenClawGatewayError as exc:
+                    if not _is_missing_session_error(exc):
+                        raise
 
-        if not wake:
-            return
+            if not wake:
+                return
 
-        client_config = GatewayClientConfig(
-            url=gateway.url,
-            token=gateway.token,
-            allow_insecure_tls=gateway.allow_insecure_tls,
-            disable_device_pairing=gateway.disable_device_pairing,
-        )
-        await ensure_session(session_key, config=client_config, label=agent.name)
-        verb = wakeup_verb or ("provisioned" if action == "provision" else "updated")
-        await send_message(
-            _wakeup_text(agent, verb=verb),
-            session_key=session_key,
-            config=client_config,
-            deliver=deliver_wakeup,
-        )
+            client_config = GatewayClientConfig(
+                url=gateway.url,
+                token=gateway.token,
+                allow_insecure_tls=gateway.allow_insecure_tls,
+                disable_device_pairing=gateway.disable_device_pairing,
+            )
+            await ensure_session(session_key, config=client_config, label=agent.name)
+            verb = wakeup_verb or ("provisioned" if action == "provision" else "updated")
+            await send_message(
+                _wakeup_text(agent, verb=verb),
+                session_key=session_key,
+                config=client_config,
+                deliver=deliver_wakeup,
+            )
+
+        await with_lifecycle_gateway_retry(_post_provision)
 
     async def delete_agent_lifecycle(
         self,
